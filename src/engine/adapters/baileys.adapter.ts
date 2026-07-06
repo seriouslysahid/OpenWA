@@ -29,6 +29,7 @@ import {
   Product,
   ProductQueryOptions,
   ReactionEvent,
+  PollVoteEvent,
   RevokedMessage,
   Status,
   StatusResult,
@@ -1023,13 +1024,60 @@ export class BaileysAdapter implements IWhatsAppEngine {
   }
 
   private handleMessagesUpdate(
-    updates: Array<{ key?: { id?: string | null }; update?: { status?: number | null } }>,
+    updates: Array<{
+      key?: { id?: string | null; remoteJid?: string | null };
+      update?: { status?: number | null; pollUpdates?: unknown[] | null };
+    }>,
   ): void {
     for (const u of updates) {
       const status = mapBaileysStatus(u.update?.status);
       if (status && u.key?.id) {
         this.callbacks.onMessageAck?.(u.key.id, status);
       }
+      // Poll votes arrive as pollUpdates on messages.update — decode which option the voter
+      // picked and emit poll.vote (docs/wa-openwa-interactive.md P2). Async: the decrypt key
+      // lives on the stored poll-creation message.
+      if (u.update?.pollUpdates?.length && u.key?.id) {
+        void this.handlePollVote(u.key.id, u.update.pollUpdates);
+      }
+    }
+  }
+
+  /**
+   * Decode a poll vote and emit onPollVote. getAggregateVotesInPollMessage decrypts each vote with
+   * the poll's messageSecret (from the stored creation message) + the creator/voter JIDs; recent
+   * Baileys (>= PR #2342, Feb 2026) handles the LID/PN JID forms — an older lib silently returns 0
+   * voters, so the fork must pin a current @whiskeysockets/baileys. Single-select IVR: the option
+   * with the voter listed is their choice. Best-effort — a decode failure never throws.
+   */
+  private async handlePollVote(pollMessageId: string, pollUpdates: unknown[]): Promise<void> {
+    try {
+      const pollCreation = await this.config.messageStore?.getMessage(this.config.sessionId, pollMessageId);
+      if (!pollCreation?.message) return; // no stored poll → no messageSecret → cannot decrypt
+      const b = await this.loadLib();
+      const aggregated = b.getAggregateVotesInPollMessage(
+        { message: pollCreation.message, pollUpdates: pollUpdates as never },
+        this.sock?.user?.id,
+      );
+      const selectedOptions = aggregated
+        .filter(o => (o.voters?.length ?? 0) > 0)
+        .map(o => o.name);
+      if (!selectedOptions.length) return; // vote cleared → nothing to advance
+      const last = pollUpdates[pollUpdates.length - 1] as {
+        pollUpdateMessageKey?: { participant?: string | null; remoteJid?: string | null };
+      };
+      const voterJid = last?.pollUpdateMessageKey?.participant ?? last?.pollUpdateMessageKey?.remoteJid ?? '';
+      this.callbacks.onPollVote?.({
+        pollMessageId,
+        chatId: this.sessionStore.toNeutralJid(pollCreation.key?.remoteJid ?? ''),
+        voterId: this.sessionStore.toNeutralJid(voterJid),
+        selectedOptions,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to decode poll vote', {
+        pollMessageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

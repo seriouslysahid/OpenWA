@@ -971,6 +971,11 @@ export class SessionService implements OnModuleDestroy, OnModuleInit, OnApplicat
         void this.webhookService.dispatch(id, 'message.revoked', revokedPayload);
         this.eventsGateway.emitMessageRevoked(id, revokedPayload);
       },
+      onPollVote: (event): void => {
+        if (!this.isLiveEngine(id, engine)) return;
+        // Poll = the IVR menu affordance on the unofficial transport (docs/wa-openwa-interactive.md P2).
+        void this.webhookService.dispatch(id, 'poll.vote', { sessionId: id, ...event });
+      },
       onMessageReaction: (event): void => {
         if (!this.isLiveEngine(id, engine)) return;
         this.logger.debug(`Message reaction received: ${event.messageId} -> ${event.reaction}`, {

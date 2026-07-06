@@ -1062,7 +1062,17 @@ export class BaileysAdapter implements IWhatsAppEngine {
       const selectedOptions = aggregated
         .filter(o => (o.voters?.length ?? 0) > 0)
         .map(o => o.name);
-      if (!selectedOptions.length) return; // vote cleared → nothing to advance
+      if (!selectedOptions.length) {
+        // 0 options = the voter cleared their choice OR the decode failed. The latter is the baileys
+        // LID/PN version gap (needs >= PR #2342; this fork pins baileys 6.7.x) — the #1 poll failure
+        // mode. Log loudly so the smoke test sees it instead of a silent no-op.
+        this.logger.warn(
+          'Poll vote decoded to 0 selected options — if a real vote was cast this is likely the ' +
+          'baileys LID/PN version gap (needs >= PR #2342); consider bumping @whiskeysockets/baileys.',
+          { pollMessageId, pollUpdateCount: pollUpdates.length },
+        );
+        return;
+      }
       const last = pollUpdates[pollUpdates.length - 1] as {
         pollUpdateMessageKey?: { participant?: string | null; remoteJid?: string | null };
       };

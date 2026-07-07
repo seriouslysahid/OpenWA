@@ -388,6 +388,17 @@ export interface ReactionEvent {
   senderId: string;
 }
 
+export interface PollVoteEvent {
+  /** id of the poll message the vote is on (the IVR menu poll we sent). */
+  pollMessageId: string;
+  /** neutral chat id of the poll's chat (the customer). */
+  chatId: string;
+  /** neutral id of the voter. */
+  voterId: string;
+  /** option NAMES the voter currently has selected (single-select IVR → exactly one). */
+  selectedOptions: string[];
+}
+
 export interface EngineEventCallbacks {
   onQRCode?: (qr: string) => void;
   onReady?: (phone: string, pushName: string) => void;
@@ -404,6 +415,8 @@ export interface EngineEventCallbacks {
   onMessageAck?: (messageId: string, status: DeliveryStatus) => void;
   onMessageRevoked?: (message: RevokedMessage) => void;
   onMessageReaction?: (event: ReactionEvent) => void;
+  /** Fired when a customer votes on a poll we sent (IVR menu). docs/wa-openwa-interactive.md P2. */
+  onPollVote?: (event: PollVoteEvent) => void;
   /**
    * Bulk historical messages from an engine's initial sync (e.g. Baileys `messaging-history.set`).
    * They predate the live session, so consumers persist them for the chat view but must not dispatch.

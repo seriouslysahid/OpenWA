@@ -29,6 +29,7 @@ import {
   Product,
   ProductQueryOptions,
   ReactionEvent,
+  PollVoteEvent,
   RevokedMessage,
   Status,
   StatusResult,
@@ -207,7 +208,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
         previous.ev.removeAllListeners('chats.upsert');
         previous.ev.removeAllListeners('chats.update');
         previous.ev.removeAllListeners('messaging-history.set');
-        previous.ev.removeAllListeners('chats.phoneNumberShare');
+        previous.ev.removeAllListeners('lid-mapping.update');
         previous.end(undefined);
       } catch {
         // end() may already have run from Baileys' own close handler — a safe no-op.
@@ -281,8 +282,9 @@ export class BaileysAdapter implements IWhatsAppEngine {
         lidPnMappings: lidPnMappings?.length ?? 0,
       });
     });
-    // WhatsApp pushes this when a lid contact shares its phone number - a direct lid->phone pair.
-    sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => this.sessionStore.addLidMappings([{ lid, pn: jid }]));
+    // baileys@7 replaced `chats.phoneNumberShare` with `lid-mapping.update` (a {pn, lid} pair) — same
+    // signal: a direct lid->phone mapping WhatsApp reveals for a @lid contact.
+    sock.ev.on('lid-mapping.update', ({ lid, pn }) => this.sessionStore.addLidMappings([{ lid, pn }]));
   }
 
   private handleConnectionUpdate(update: {
@@ -1023,13 +1025,70 @@ export class BaileysAdapter implements IWhatsAppEngine {
   }
 
   private handleMessagesUpdate(
-    updates: Array<{ key?: { id?: string | null }; update?: { status?: number | null } }>,
+    updates: Array<{
+      key?: { id?: string | null; remoteJid?: string | null };
+      update?: { status?: number | null; pollUpdates?: unknown[] | null };
+    }>,
   ): void {
     for (const u of updates) {
       const status = mapBaileysStatus(u.update?.status);
       if (status && u.key?.id) {
         this.callbacks.onMessageAck?.(u.key.id, status);
       }
+      // Poll votes arrive as pollUpdates on messages.update — decode which option the voter
+      // picked and emit poll.vote (docs/wa-openwa-interactive.md P2). Async: the decrypt key
+      // lives on the stored poll-creation message.
+      if (u.update?.pollUpdates?.length && u.key?.id) {
+        void this.handlePollVote(u.key.id, u.update.pollUpdates);
+      }
+    }
+  }
+
+  /**
+   * Decode a poll vote and emit onPollVote. getAggregateVotesInPollMessage decrypts each vote with
+   * the poll's messageSecret (from the stored creation message) + the creator/voter JIDs; recent
+   * Baileys (>= PR #2342, Feb 2026) handles the LID/PN JID forms — an older lib silently returns 0
+   * voters, so the fork must pin a current @whiskeysockets/baileys. Single-select IVR: the option
+   * with the voter listed is their choice. Best-effort — a decode failure never throws.
+   */
+  private async handlePollVote(pollMessageId: string, pollUpdates: unknown[]): Promise<void> {
+    try {
+      const pollCreation = await this.config.messageStore?.getMessage(this.config.sessionId, pollMessageId);
+      if (!pollCreation?.message) return; // no stored poll → no messageSecret → cannot decrypt
+      const b = await this.loadLib();
+      const aggregated = b.getAggregateVotesInPollMessage(
+        { message: pollCreation.message, pollUpdates: pollUpdates as never },
+        this.sock?.user?.id,
+      );
+      const selectedOptions = aggregated
+        .filter(o => (o.voters?.length ?? 0) > 0)
+        .map(o => o.name);
+      if (!selectedOptions.length) {
+        // 0 options = the voter cleared their choice OR the decode failed. The latter is the baileys
+        // LID/PN version gap (needs >= PR #2342; this fork pins baileys 6.7.x) — the #1 poll failure
+        // mode. Log loudly so the smoke test sees it instead of a silent no-op.
+        this.logger.warn(
+          'Poll vote decoded to 0 selected options — if a real vote was cast this is likely the ' +
+          'baileys LID/PN version gap (needs >= PR #2342); consider bumping @whiskeysockets/baileys.',
+          { pollMessageId, pollUpdateCount: pollUpdates.length },
+        );
+        return;
+      }
+      const last = pollUpdates[pollUpdates.length - 1] as {
+        pollUpdateMessageKey?: { participant?: string | null; remoteJid?: string | null };
+      };
+      const voterJid = last?.pollUpdateMessageKey?.participant ?? last?.pollUpdateMessageKey?.remoteJid ?? '';
+      this.callbacks.onPollVote?.({
+        pollMessageId,
+        chatId: this.sessionStore.toNeutralJid(pollCreation.key?.remoteJid ?? ''),
+        voterId: this.sessionStore.toNeutralJid(voterJid),
+        selectedOptions,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to decode poll vote', {
+        pollMessageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

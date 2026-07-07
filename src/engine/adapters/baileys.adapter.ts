@@ -208,7 +208,7 @@ export class BaileysAdapter implements IWhatsAppEngine {
         previous.ev.removeAllListeners('chats.upsert');
         previous.ev.removeAllListeners('chats.update');
         previous.ev.removeAllListeners('messaging-history.set');
-        previous.ev.removeAllListeners('chats.phoneNumberShare');
+        previous.ev.removeAllListeners('lid-mapping.update');
         previous.end(undefined);
       } catch {
         // end() may already have run from Baileys' own close handler — a safe no-op.
@@ -282,8 +282,9 @@ export class BaileysAdapter implements IWhatsAppEngine {
         lidPnMappings: lidPnMappings?.length ?? 0,
       });
     });
-    // WhatsApp pushes this when a lid contact shares its phone number - a direct lid->phone pair.
-    sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => this.sessionStore.addLidMappings([{ lid, pn: jid }]));
+    // baileys@7 replaced `chats.phoneNumberShare` with `lid-mapping.update` (a {pn, lid} pair) — same
+    // signal: a direct lid->phone mapping WhatsApp reveals for a @lid contact.
+    sock.ev.on('lid-mapping.update', ({ lid, pn }) => this.sessionStore.addLidMappings([{ lid, pn }]));
   }
 
   private handleConnectionUpdate(update: {

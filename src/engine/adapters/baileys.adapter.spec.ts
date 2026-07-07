@@ -866,8 +866,8 @@ describe('BaileysAdapter inbound fan-out', () => {
     const onMessage = jest.fn();
     const adapter = newAdapter();
     await adapter.initialize({ onMessage });
-    // No history-sync mapping this time; the inbound key itself carries senderLid + senderPn,
-    // which is the only place a fresh @lid sender's number is revealed in baileys@6.7.23.
+    // No history-sync mapping this time; the inbound key itself carries the @lid remoteJid and its
+    // phone twin as remoteJidAlt — where baileys@7 reveals a fresh @lid sender's number.
     fakeSock.fire('messages.upsert', {
       type: 'notify',
       messages: [
@@ -876,8 +876,7 @@ describe('BaileysAdapter inbound fan-out', () => {
             remoteJid: '111@lid',
             fromMe: false,
             id: 'IN_LID_KEY',
-            senderLid: '111@lid',
-            senderPn: '628111@s.whatsapp.net',
+            remoteJidAlt: '628111@s.whatsapp.net',
           },
           message: { conversation: 'hi from lid' },
           messageTimestamp: 1700000005,

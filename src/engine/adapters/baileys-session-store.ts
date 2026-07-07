@@ -98,11 +98,18 @@ export class BaileysSessionStore {
    * lets `resolvePhone` (senderPhone, `GET /contacts/:id/phone`) and lid canonicalization succeed. The
    * pairs flow through addLidMappings, so they also write through to the persistent table.
    */
-  recordKeyLidMappings(key: Pick<WAMessageKey, 'senderLid' | 'senderPn' | 'participantLid' | 'participantPn'>): void {
-    this.addLidMappings([
-      { lid: key.senderLid ?? undefined, pn: key.senderPn ?? undefined },
-      { lid: key.participantLid ?? undefined, pn: key.participantPn ?? undefined },
-    ]);
+  recordKeyLidMappings(key: WAMessageKey): void {
+    // baileys@7 dropped the sender*/participant* Lid/Pn key fields; the phone JID now rides alongside
+    // its @lid twin as `remoteJidAlt` / `participantAlt` (with `addressingMode`). For each (jid, alt)
+    // pair, whichever side is @lid is the lid and the other is the phone — same learn-from-key intent.
+    const pairs: { lid?: string; pn?: string }[] = [];
+    const learn = (a?: string | null, b?: string | null): void => {
+      if (a?.endsWith('@lid')) pairs.push({ lid: a, pn: b ?? undefined });
+      else if (b?.endsWith('@lid')) pairs.push({ lid: b, pn: a ?? undefined });
+    };
+    learn(key.remoteJid, key.remoteJidAlt);
+    learn(key.participant, key.participantAlt);
+    this.addLidMappings(pairs);
   }
 
   /** Write a learned lid->phone pair through to the persistent table (bare digits, fire-and-forget). */
@@ -284,11 +291,12 @@ export class BaileysSessionStore {
   }
 
   private toNeutralChat(c: Chat): ChatSummary {
-    const last = this.lastMessages.get(c.id);
+    const id = c.id ?? '';  // baileys@7 types Chat.id as nullable; empty-string is a safe neutral
+    const last = this.lastMessages.get(id);
     return {
-      id: this.toNeutralJid(c.id),
-      name: c.name ?? this.resolveContactName(c.id),
-      isGroup: c.id.endsWith('@g.us'),
+      id: this.toNeutralJid(id),
+      name: c.name ?? this.resolveContactName(id),
+      isGroup: id.endsWith('@g.us'),
       unreadCount: c.unreadCount ?? 0,
       timestamp: last?.timestamp ?? this.toUnixSeconds(c.conversationTimestamp),
       lastMessage: last?.text,
